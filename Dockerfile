@@ -1,79 +1,130 @@
-# Use the official Debian Bookworm slim base image
-FROM debian:bookworm-slim
+# Use the latest Debian image
+FROM debian:latest
 
-# Set environment variables for non-interactive installs
+# Set environment variables to avoid prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install necessary packages
-RUN apt-get update && apt-get install -y \
-    qemu-system-x86 \
-    novnc \
-    websockify \
-    python3 \
-    python3-pip \
-    xvfb \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+# Update the package list and install qemu, noVNC, and other dependencies
+RUN apt-get update && \
+    apt-get install -y qemu qemu-utils python3 python3-pip novnc websockify && \
+    apt-get clean
 
-# Install Flask and Flask-Cors
-RUN pip3 install Flask Flask-Cors
+# Install Flask
+RUN pip3 install Flask
 
-# Create a directory for the Flask app
+# Create the directory for the Flask application
+RUN mkdir -p /app/uploads /app/templates /app/static
+
+# Set the working directory
 WORKDIR /app
 
-# Copy the Flask application code into the container
-RUN echo "from flask import Flask, request, send_from_directory\n" \
-    "import os\n" \
-    "import subprocess\n" \
-    "import threading\n" \
-    "from flask_cors import CORS\n" \
-    "\n" \
-    "app = Flask(__name__)\n" \
-    "CORS(app)  # Enable CORS for all routes\n" \
-    "\n" \
-    "UPLOAD_FOLDER = '/uploads'\n" \
-    "os.makedirs(UPLOAD_FOLDER, exist_ok=True)\n" \
-    "\n" \
-    "def start_websockify():\n" \
-    "    subprocess.Popen(['websockify', '--web', '/usr/share/novnc', '6080', 'localhost:5901'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n" \
-    "\n" \
-    "@app.route('/')\n" \
-    "def index():\n" \
-    "    return 'Welcome to the QEMU NoVNC uploader!'\n" \
-    "\n" \
-    "@app.route('/upload', methods=['POST'])\n" \
-    "def upload_file():\n" \
-    "    if 'file' not in request.files:\n" \
-    "        return 'No file part', 400\n" \
-    "    file = request.files['file']\n" \
-    "    if file.filename == '':\n" \
-    "        return 'No selected file', 400\n" \
-    "    filepath = os.path.join(UPLOAD_FOLDER, file.filename)\n" \
-    "    file.save(filepath)\n" \
-    "\n" \
-    "    # Start QEMU with the uploaded ISO\n" \
-    "    subprocess.Popen([\n" \
-    "        'xvfb-run', 'qemu-system-x86_64', \n" \
-    "        '-hda', filepath, \n" \
-    "        '-nographic', \n" \
-    "        '-enable-kvm', \n" \
-    "        '-m', '12288',  # 12GB of RAM\n" \
-    "        '-vnc', ':0', \n" \
-    "        '-spice', 'port=5901,disable-ticketing'\n" \
-    "    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n" \
-    "\n" \
-    "    return f'File uploaded and QEMU started with {file.filename}.', 200\n" \
-    "\n" \
-    "@app.route('/uploads/<filename>')\n" \
-    "def uploaded_file(filename):\n" \
-    "    return send_from_directory(UPLOAD_FOLDER, filename)\n" \
-    "\n" \
-    "if __name__ == '__main__':\n" \
-    "    threading.Thread(target=start_websockify).start()\n" \
-    "    app.run(host='0.0.0.0', port=5000)\n" > /app/app.py
+# Add the Flask application code directly in the Dockerfile
+RUN echo 'from flask import Flask, request, render_template, redirect, url_for' > app.py && \
+    echo 'import os' >> app.py && \
+    echo 'import subprocess' >> app.py && \
+    echo '' >> app.py && \
+    echo 'app = Flask(__name__)' >> app.py && \
+    echo 'app.config["UPLOAD_FOLDER"] = "uploads"' >> app.py && \
+    echo 'app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024  # Max file size: 2 GB' >> app.py && \
+    echo '' >> app.py && \
+    echo '# Ensure the upload folder exists' >> app.py && \
+    echo 'os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)' >> app.py && \
+    echo '' >> app.py && \
+    echo '@app.route("/")' >> app.py && \
+    echo 'def index():' >> app.py && \
+    echo '    files = os.listdir(app.config["UPLOAD_FOLDER"])' >> app.py && \
+    echo '    return render_template("index.html", files=files)' >> app.py && \
+    echo '' >> app.py && \
+    echo '@app.route("/upload", methods=["POST"])' >> app.py && \
+    echo 'def upload_file():' >> app.py && \
+    echo '    if "file" not in request.files:' >> app.py && \
+    echo '        return redirect(request.url)' >> app.py && \
+    echo '    file = request.files["file"]' >> app.py && \
+    echo '    if file.filename == "":' >> app.py && \
+    echo '        return redirect(request.url)' >> app.py && \
+    echo '    if file:' >> app.py && \
+    echo '        filepath = os.path.join(app.config["UPLOAD_FOLDER"], file.filename)' >> app.py && \
+    echo '        file.save(filepath)' >> app.py && \
+    echo '        return redirect(url_for("index"))' >> app.py && \
+    echo '' >> app.py && \
+    echo '@app.route("/run", methods=["POST"])' >> app.py && \
+    echo 'def run_iso():' >> app.py && \
+    echo '    iso_file = request.form["iso_file"]' >> app.py && \
+    echo '    iso_path = os.path.join(app.config["UPLOAD_FOLDER"], iso_file)' >> app.py && \
+    echo '    subprocess.Popen(["qemu-system-x86_64", "-cdrom", iso_path, "-vnc", ":1"])' >> app.py && \
+    echo '    return redirect(url_for("vnc_viewer"))' >> app.py && \
+    echo '' >> app.py && \
+    echo '@app.route("/create_drive", methods=["POST"])' >> app.py && \
+    echo 'def create_drive():' >> app.py && \
+    echo '    drive_name = request.form["drive_name"]' >> app.py && \
+    echo '    drive_size = request.form["drive_size"]' >> app.py && \
+    echo '    drive_path = os.path.join(app.config["UPLOAD_FOLDER"], drive_name)' >> app.py && \
+    echo '    subprocess.run(["qemu-img", "create", "-f", "qcow2", drive_path, f"{drive_size}G"])' >> app.py && \
+    echo '    return redirect(url_for("index"))' >> app.py && \
+    echo '' >> app.py && \
+    echo '@app.route("/vnc_viewer")' >> app.py && \
+    echo 'def vnc_viewer():' >> app.py && \
+    echo '    return render_template("vnc_viewer.html")' >> app.py && \
+    echo '' >> app.py && \
+    echo 'if __name__ == "__main__":' >> app.py && \
+    echo '    app.run(host="0.0.0.0", port=5000)' >> app.py
 
-# Expose the necessary ports for Flask and noVNC
-EXPOSE 5000 6080
+# Add the HTML template directly in the Dockerfile
+RUN echo '<!doctype html>' > templates/index.html && \
+    echo '<html lang="en">' >> templates/index.html && \
+    echo '<head>' >> templates/index.html && \
+    echo '    <meta charset="UTF-8">' >> templates/index.html && \
+    echo '    <meta name="viewport" content="width=device-width, initial-scale=1.0">' >> templates/index.html && \
+    echo '    <title>Flask QEMU App</title>' >> templates/index.html && \
+    echo '</head>' >> templates/index.html && \
+    echo '<body>' >> templates/index.html && \
+    echo '    <h1>Upload ISO File</h1>' >> templates/index.html && \
+    echo '    <form action="/upload" method="post" enctype="multipart/form-data">' >> templates/index.html && \
+    echo '        <input type="file" name="file">' >> templates/index.html && \
+    echo '        <input type="submit" value="Upload">' >> templates/index.html && \
+    echo '    </form>' >> templates/index.html && \
+    echo '' >> templates/index.html && \
+    echo '    <h1>Select ISO File to Run</h1>' >> templates/index.html && \
+    echo '    <form action="/run" method="post">' >> templates/index.html && \
+    echo '        <select name="iso_file">' >> templates/index.html && \
+    echo '            {% for file in files %}' >> templates/index.html && \
+    echo '            <option value="{{ file }}">{{ file }}</option>' >> templates/index.html && \
+    echo '            {% endfor %}' >> templates/index.html && \
+    echo '        </select>' >> templates/index.html && \
+    echo '        <input type="submit" value="Run">' >> templates/index.html && \
+    echo '    </form>' >> templates/index.html && \
+    echo '' >> templates/index.html && \
+    echo '    <h1>Create Virtual Hard Drive</h1>' >> templates/index.html && \
+    echo '    <form action="/create_drive" method="post">' >> templates/index.html && \
+    echo '        <input type="text" name="drive_name" placeholder="Drive name (e.g., drive.qcow2)">' >> templates/index.html && \
+    echo '        <input type="text" name="drive_size" placeholder="Size in GB (e.g., 10)">' >> templates/index.html && \
+    echo '        <input type="submit" value="Create">' >> templates/index.html && \
+    echo '    </form>' >> templates/index.html && \
+    echo '</body>' >> templates/index.html && \
+    echo '</html>' >> templates/index.html
 
-# Start the Flask application when the container runs
-CMD ["python3", "/app/app.py"]
+# Add the VNC viewer HTML template directly in the Dockerfile
+RUN echo '<!doctype html>' > templates/vnc_viewer.html && \
+    echo '<html lang="en">' >> templates/vnc_viewer.html && \
+    echo '<head>' >> templates/vnc_viewer.html && \
+    echo '    <meta charset="UTF-8">' >> templates/vnc_viewer.html && \
+    echo '    <meta name="viewport" content="width=device-width, initial-scale=1.0">' >> templates/vnc_viewer.html && \
+    echo '    <title>VNC Viewer</title>' >> templates/vnc_viewer.html && \
+    echo '    <script src="https://cdnjs.cloudflare.com/ajax/libs/noVNC/1.2.0/vnc.min.js"></script>' >> templates/vnc_viewer.html && \
+    echo '</head>' >> templates/vnc_viewer.html && \
+    echo '<body>' >> templates/vnc_viewer.html && \
+    echo '    <h1>VNC Viewer</h1>' >> templates/vnc_viewer.html && \
+    echo '    <div id="noVNC_container" style="height: 80vh;"></div>' >> templates/vnc_viewer.html && \
+    echo '    <script>' >> templates/vnc_viewer.html && \
+    echo '        const rfb = new RFB(document.getElementById("noVNC_container"), "ws://localhost:5901");' >> templates/vnc_viewer.html && \
+    echo '        rfb.viewOnly = false;' >> templates/vnc_viewer.html && \
+    echo '        rfb.scaleViewport = true;' >> templates/vnc_viewer.html && \
+    echo '    </script>' >> templates/vnc_viewer.html && \
+    echo '</body>' >> templates/vnc_viewer.html && \
+    echo '</html>' >> templates/vnc_viewer.html
+
+# Expose the port the app runs on
+EXPOSE 5000
+
+# Run the Flask application
+CMD ["python3", "app.py"]
